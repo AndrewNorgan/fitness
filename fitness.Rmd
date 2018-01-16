@@ -1,0 +1,87 @@
+---
+title: "Fitness"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(tidyverse)
+library(janitor)
+library(doMC)
+registerDoMC(cores = 6)
+train <- read_csv("pml-training.csv")
+test <- read_csv("pml-testing.csv")
+```
+
+## Introduction
+The dataset is described as such:
+"Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E)."
+
+Thus, our task is to correctly predict an activity class based upon the various sensor recordings in the dataset.  If we examine the data that is included in the test set, we can see that many variables in the raw dataset are not useful predictors.  We will remove all empty columns, filter away the `new_window` data that is not in the test set, and also remove several columns (timestamps) that should not be predictors.  Under the assumption that this model is supposed to be generalizeable, the participant names are also excluded.
+
+```{r}
+train.complete <- train %>% 
+    filter(new_window == "no") %>% 
+    remove_empty_cols() %>%
+    select(-c(1:7)) %>%
+    mutate(classe = as.factor(classe)) %>%
+    drop_na() 
+
+idx <- seq(2,nrow(train.complete),4)
+train.subset <- train.complete %>% slice(idx)
+
+test.complete <- test %>%
+    remove_empty_cols() %>%
+    select(-c(1:7)) 
+```
+
+
+The resulting training dataset has 19,215 observations of 53 variables.  These are grouped into 5 classes, "A" through "E".  As this is a multiclass classification problem, we will consider using a random forest model.  After some trial and error (not shown), the full dataset appears to be too large to calculate a model in a reasonable amount of time.  We will therefore subset the model (previously done to form train.subset) the model by taking every 4th observation.  Because the observations are generated in groups related to windows of a period of activity, this should still give us a representative sample of the kind of observations associated with each activity class.
+
+## Model training
+```{r}
+fitControl <- trainControl(method = "repeatedcv",
+                           number = 10,
+                           repeats = 5,
+                           classProbs = TRUE,
+                           search = "random")
+
+modelrf <- train(classe ~ ., data = train.subset, method = "rf", 
+                 trControl = fitControl,
+                 preProcess = c("center", "scale"))
+```
+
+## Model evaluation
+
+For the model training, we will use repeated cross validation to attempt to predict how well the model will perform out-of-group.
+
+```{r}
+modelrf$resample
+```
+
+We can see the results of the cross validation here - it looks like the model is doing consistently well in prediting >95% in test set.
+
+Because we held back 75% of the data, we can now also look at how well the model predicts with that data.
+
+```{r}
+confusionMatrix(unlist(train.complete[-idx,53]), predict(modelrf, train.complete[-idx,-53]))
+```
+
+As the confusion matrix shows, the model does quite well at predicting with the held back data. We can infer that it is likely to work reasonably well for out-of-group data such as our test set, with error of less than 5\%. Applied to our test set, this means that I would expect to get at least 18 of the 20 predictions correct.
+
+We will now generate the model predictions for the test set.
+## Model predictions
+```{r}
+pred <- predict(modelrf, test.complete)
+```
+
+These predictions will be used for the quiz portion of the assignment (fingers crossed).
+
+## Conclusions
+
+The authors responsible for collecting the dataset performed time-based subsetting and feature engineering.  The limited size and nature of the test set did not allow for this approach.  Another approach would have been to perform feature analysis (e.g., PCA) to reduce the feature space and make it possible to use all observations of fewer features.  I considered this approach, but ultimtely decided to subset the data row-wise based on the retetative nature of the observations (sensors were reported to have generated data at 45 Hz, or 45 observations per second).  The ultimate reason I subsetted the data was because of the long training times for the models (a variety), despite using multicore processing.
+
+I attempted to use a number of different models, including KNN and NNET, but none performed better than the Random Forest that I attempted first.  Given that the RF model was performing at >95\% accuracy, I decided to continue with that model.  As an aside, the study authors also used an RF model.
+
+I started to look into hyperparameter tuning, but ultimately ran out of the time due to the extensive model training times (even with the reduced dataset).  As the model performed well with the default parameters, I chose to defer hyperparameter tuning to a future project.
